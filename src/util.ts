@@ -1,3 +1,9 @@
+import { isValid, parseISO, toDate } from "date-fns";
+import pLimit from "p-limit";
+import prettyBytes from "pretty-bytes";
+import prettyMs from "pretty-ms";
+import sanitizeFilename from "sanitize-filename";
+
 export const USER_AGENT =
   "Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
@@ -62,35 +68,33 @@ export function hostFromUrl(input: string): string | null {
   }
 }
 
-/** Strip characters that are illegal or annoying in filenames on any platform. */
+/**
+ * Strip characters that are illegal or annoying in filenames on any platform.
+ *
+ * `sanitize-filename` covers the platform rules (control characters, reserved
+ * Windows device names like CON, trailing dots); the rest is cosmetic - collapse
+ * runs of whitespace and don't leave a name starting or ending in separators.
+ */
 export function sanitize(name: string, maxLen = 120): string {
-  const cleaned = name
-    .replace(/[\x00-\x1f\x7f]/g, "")
-    .replace(/[<>:"/\\|?*]/g, "-")
+  const cleaned = sanitizeFilename(name, { replacement: "-" })
     .replace(/\s+/g, " ")
-    .replace(/^[.\s]+|[.\s]+$/g, "")
-    .trim();
-  const safe = cleaned.length ? cleaned : "untitled";
+    .replace(/^[-.\s]+|[-.\s]+$/g, "");
+  const safe = cleaned.length > 0 ? cleaned : "untitled";
   return safe.length > maxLen ? safe.slice(0, maxLen).trimEnd() : safe;
 }
 
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  const v = bytes / 1024 ** i;
-  return `${v.toFixed(v >= 100 || i === 0 ? 0 : 1)} ${units[i]}`;
+  return prettyBytes(bytes);
 }
 
+/** Duration as `m:ss` / `h:mm:ss`. */
 export function formatDuration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "0:00";
-  const s = Math.round(seconds);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  return h > 0
-    ? `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`
-    : `${m}:${String(sec).padStart(2, "0")}`;
+  return prettyMs(Math.round(seconds) * 1000, {
+    colonNotation: true,
+    secondsDecimalDigits: 0,
+  });
 }
 
 /** Seconds between 1601-01-01 (Windows FILETIME epoch) and the Unix epoch. */
@@ -104,17 +108,30 @@ const FILETIME_EPOCH_OFFSET = 11_644_473_600;
  * (what DeliveryInfo's SessionStartTime uses).
  */
 export function datePrefix(startTime: string | number | null | undefined): string | null {
+  return parseStartTime(startTime)?.toISOString().slice(0, 10) ?? null;
+}
+
+/** Full ISO instant for a start time, or null. Same input shapes as `datePrefix`. */
+export function isoTimestamp(startTime: string | number | null | undefined): string | null {
+  return parseStartTime(startTime)?.toISOString() ?? null;
+}
+
+function parseStartTime(startTime: string | number | null | undefined): Date | null {
   if (startTime === null || startTime === undefined || startTime === "") return null;
 
-  let d: Date;
+  // Seconds since 1601-01-01 (Windows FILETIME) - what DeliveryInfo reports.
   if (typeof startTime === "number") {
-    d = new Date((startTime - FILETIME_EPOCH_OFFSET) * 1000);
-  } else {
-    const aspNet = startTime.match(/\/Date\((-?\d+)/);
-    d = aspNet ? new Date(Number(aspNet[1])) : new Date(startTime);
+    return orNull(toDate((startTime - FILETIME_EPOCH_OFFSET) * 1000));
   }
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toISOString().slice(0, 10);
+  // ASP.NET's /Date(1700000000000)/ blob - what the session list reports.
+  const aspNet = startTime.match(/\/Date\((-?\d+)/);
+  if (aspNet) return orNull(toDate(Number(aspNet[1])));
+
+  return orNull(parseISO(startTime));
+}
+
+function orNull(d: Date): Date | null {
+  return isValid(d) ? d : null;
 }
 
 /** Run `worker` over `items` with at most `limit` in flight, preserving order. */
@@ -123,18 +140,6 @@ export async function pool<T, R>(
   limit: number,
   worker: (item: T, index: number) => Promise<R>,
 ): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
-  const runners = Array.from(
-    { length: Math.max(1, Math.min(limit, items.length)) },
-    async () => {
-      while (true) {
-        const i = next++;
-        if (i >= items.length) return;
-        results[i] = await worker(items[i]!, i);
-      }
-    },
-  );
-  await Promise.all(runners);
-  return results;
+  const run = pLimit(Math.max(1, limit));
+  return await Promise.all(items.map((item, i) => run(() => worker(item, i))));
 }

@@ -1,5 +1,13 @@
 import { expect, test } from "bun:test";
-import { datePrefix, formatDuration, parseTarget, pool, sanitize } from "./util";
+import {
+  datePrefix,
+  formatBytes,
+  formatDuration,
+  isoTimestamp,
+  parseTarget,
+  pool,
+  sanitize,
+} from "./util";
 
 const GUID = "12345678-90ab-cdef-1234-567890abcdef";
 
@@ -33,6 +41,18 @@ test("sanitize strips path separators and trims", () => {
   expect(sanitize("   ")).toBe("untitled");
 });
 
+test("sanitize handles Windows reserved names and trailing dots", () => {
+  expect(sanitize("CON")).toBe("untitled");
+  expect(sanitize("lecture...")).toBe("lecture");
+  expect(sanitize("a".repeat(300)).length).toBe(120);
+});
+
+test("formatBytes", () => {
+  expect(formatBytes(0)).toBe("0 B");
+  expect(formatBytes(-1)).toBe("0 B");
+  expect(formatBytes(1_500_000)).toBe("1.5 MB");
+});
+
 test("datePrefix handles ISO and ASP.NET dates", () => {
   expect(datePrefix("2025-03-04T10:00:00Z")).toBe("2025-03-04");
   expect(datePrefix("/Date(1741082400000)/")).toBe("2025-03-04");
@@ -59,4 +79,12 @@ test("pool preserves order and respects the limit", async () => {
 
 test("datePrefix converts Panopto's 1601-epoch seconds", () => {
   expect(datePrefix(13432115686)).toBe("2026-08-25");
+});
+
+test("isoTimestamp keeps the time of day the sidecar needs", () => {
+  expect(isoTimestamp("2025-03-04T10:00:00Z")).toBe("2025-03-04T10:00:00.000Z");
+  expect(isoTimestamp("/Date(1741082400000)/")).toBe("2025-03-04T10:00:00.000Z");
+  expect(isoTimestamp(13432115686)).toBe("2026-08-25T07:14:46.000Z");
+  expect(isoTimestamp(null)).toBeNull();
+  expect(isoTimestamp("not a date")).toBeNull();
 });

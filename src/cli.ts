@@ -1,4 +1,4 @@
-import { parseArgs } from "node:util";
+import { Command, type CommanderError, InvalidArgumentError, Option } from "commander";
 import { basename, dirname, join, resolve } from "node:path";
 import { readdir, stat } from "node:fs/promises";
 import {
@@ -28,6 +28,7 @@ import {
   formatBytes,
   formatDuration,
   hostFromUrl,
+  isoTimestamp,
   parseTarget,
   pool,
   sanitize,
@@ -36,52 +37,117 @@ import {
 
 const DEFAULT_HOST = "au.cloud.panopto.eu";
 
-const HELP = `panopto-au-downloader - download Panopto recordings you have access to
+/** Hidden long-form aliases kept for muscle memory; they mirror a visible flag. */
+function alias(flag: string): Option {
+  return new Option(flag).hideHelp();
+}
 
-Usage:
-  bun run index.ts [options] <url-or-guid> [...more]
+function positiveInt(value: string): number {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1) {
+    throw new InvalidArgumentError("must be a positive integer.");
+  }
+  return n;
+}
 
+function buildProgram(): Command {
+  return new Command()
+    .name("panopto-au-downloader")
+    .usage("[options] <url-or-guid> [...more]")
+    .description("download Panopto recordings you have access to")
+    .argument("<target...>", "viewer URLs, folder URLs or session guids (paths, with --fix-audio)")
+    .addOption(new Option("-o, --out <dir>", "output directory").env("PANOPTO_OUT").default("."))
+    .addOption(
+      new Option("-c, --concurrency <n>", "parallel downloads").argParser(positiveInt).default(2),
+    )
+    .option("-r, --recursive", "for folders, also descend into subfolders")
+    .option(
+      "-s, --separate-streams",
+      "save each source stream (camera, screen, slides) separately instead of the combined " +
+        "recording. Each session gets its own directory: <session>/01-dv.mp4, 02-object.mp4, " +
+        "captions.srt (alias: --all-streams)",
+    )
+    .addOption(alias("--all-streams"))
+    .option(
+      "--no-shared-audio",
+      "with -s, don't copy the primary feed's audio into the screen-capture streams (which have " +
+        "none of their own)",
+    )
+    .option(
+      "--fix-audio",
+      "repair mode: add the missing audio track to already downloaded stream files. Takes paths, " +
+        "not URLs: bun run index.ts --fix-audio downloads/",
+    )
+    .option("-l, --list", "list what would be downloaded, then exit (alias: --dry-run)")
+    .addOption(alias("--dry-run"))
+    .option(
+      "--flat",
+      'no per-folder or per-session subdirectories; stream files become "<session> [01-dv].mp4"',
+    )
+    .option(
+      "--no-captions",
+      "skip the .srt subtitles (saved by default, in both combined and separate-streams mode)",
+    )
+    .option(
+      "--captions-only",
+      "download only the .srt subtitles, no video (aliases: --subs-only, --subtitles-only)",
+    )
+    .addOption(alias("--subs-only"))
+    .addOption(alias("--subtitles-only"))
+    .option("-f, --overwrite", "re-download files that already exist")
+    .addOption(
+      new Option(
+        "--cookies-from <browser>",
+        'read the login cookie from a local browser profile instead of PANOPTO_COOKIE (default: try Firefox when PANOPTO_COOKIE is unset)',
+      ).choices(["firefox", "none", "env"]),
+    )
+    .option("--profile <name>", "which browser profile to read cookies from (name substring or full path)")
+    .addOption(
+      new Option("--host <host>", `Panopto host (default: the target's host, else ${DEFAULT_HOST})`)
+        .env("PANOPTO_HOST"),
+    )
+    .addHelpText(
+      "after",
+      `
 Targets may be:
   - a viewer URL      https://<host>/Panopto/Pages/Viewer.aspx?id=<guid>
   - a folder URL      https://<host>/Panopto/Pages/Sessions/List.aspx?folderID=%22<guid>%22
   - a bare session guid
 
-Options:
-  -o, --out <dir>          output directory (default: current directory)
-  -c, --concurrency <n>    parallel downloads (default: 2)
-  -r, --recursive          for folders, also descend into subfolders
-  -s, --separate-streams   save each source stream (camera, screen, slides)
-                           separately instead of the combined recording. Each
-                           session gets its own directory:
-                             <session>/01-dv.mp4, 02-object.mp4, captions.srt
-                           (alias: --all-streams)
-      --no-shared-audio    with -s, don't copy the primary feed's audio into the
-                           screen-capture streams (which have none of their own)
-      --fix-audio          repair mode: add the missing audio track to already
-                           downloaded stream files. Takes paths, not URLs:
-                             bun run index.ts --fix-audio downloads/
-  -l, --list               list what would be downloaded, then exit
-                           (alias: --dry-run)
-      --flat               no per-folder or per-session subdirectories; stream
-                           files become "<session> [01-dv].mp4"
-      --no-captions        skip the .srt subtitles (saved by default, in both
-                           combined and separate-streams mode)
-      --captions-only      download only the .srt subtitles, no video
-                           (aliases: --subs-only, --subtitles-only)
-  -f, --overwrite          re-download files that already exist
-      --cookies-from <b>   read the login cookie from a local browser profile
-                           instead of PANOPTO_COOKIE: "firefox" or "none"
-                           (default: try Firefox when PANOPTO_COOKIE is unset)
-      --profile <name>     which browser profile to read cookies from
-                           (name substring or full path)
-      --host <host>        Panopto host (default: ${DEFAULT_HOST}, or PANOPTO_HOST)
-  -h, --help               show this help
-
 Auth:
   By default the cookie is taken from your Firefox profile - just stay logged in
   at the Panopto site. Otherwise set PANOPTO_COOKIE in .env to the Cookie header
   (or just the .ASPXAUTH value) from a logged-in browser. See README.md.
-`;
+`,
+    )
+    .showHelpAfterError("(run with --help to see the available options)")
+    .exitOverride();
+}
+
+/**
+ * What commander hands back. Flags without a declared default are absent rather
+ * than false, so the boolean ones are optional; `--no-x` pairs always have one.
+ */
+interface ParsedFlags {
+  out: string;
+  concurrency: number;
+  sharedAudio: boolean;
+  captions: boolean;
+  recursive?: boolean;
+  separateStreams?: boolean;
+  allStreams?: boolean;
+  fixAudio?: boolean;
+  list?: boolean;
+  dryRun?: boolean;
+  flat?: boolean;
+  captionsOnly?: boolean;
+  subsOnly?: boolean;
+  subtitlesOnly?: boolean;
+  overwrite?: boolean;
+  cookiesFrom?: string;
+  profile?: string;
+  host?: string;
+}
 
 interface Options {
   out: string;
@@ -104,69 +170,30 @@ interface Job {
 }
 
 export async function main(argv: string[]): Promise<number> {
-  let values: Record<string, string | boolean | undefined>;
+  const program = buildProgram();
+  let flags: ParsedFlags;
   let positionals: string[];
   try {
-    ({ values, positionals } = parseArgs({
-      args: argv,
-      allowPositionals: true,
-      options: {
-        out: { type: "string", short: "o" },
-        concurrency: { type: "string", short: "c" },
-        recursive: { type: "boolean", short: "r", default: false },
-        "separate-streams": { type: "boolean", short: "s", default: false },
-        "all-streams": { type: "boolean", default: false },
-        "no-shared-audio": { type: "boolean", default: false },
-        "fix-audio": { type: "boolean", default: false },
-        list: { type: "boolean", short: "l", default: false },
-        "dry-run": { type: "boolean", default: false },
-        flat: { type: "boolean", default: false },
-        captions: { type: "boolean", default: true },
-        "no-captions": { type: "boolean", default: false },
-        "captions-only": { type: "boolean", default: false },
-        "subs-only": { type: "boolean", default: false },
-        "subtitles-only": { type: "boolean", default: false },
-        overwrite: { type: "boolean", short: "f", default: false },
-        host: { type: "string" },
-        "cookies-from": { type: "string" },
-        profile: { type: "string" },
-        help: { type: "boolean", short: "h", default: false },
-      },
-    }) as { values: Record<string, string | boolean | undefined>; positionals: string[] });
+    program.parse(argv, { from: "user" });
+    flags = program.opts<ParsedFlags>();
+    positionals = program.args;
   } catch (err) {
-    console.error(`${errorMessage(err)}\n\nRun with --help to see the available options.`);
-    return 2;
+    // exitOverride() turns commander's process.exit into a throw; it has already
+    // written the help text or the error message itself.
+    return isHelpRequest(err) ? 0 : 2;
   }
 
-  if (values.help) {
-    console.log(HELP);
-    return 0;
-  }
-  if (positionals.length === 0) {
-    console.error("No target given.\n");
-    console.error(HELP);
-    return 2;
-  }
+  const concurrency = flags.concurrency;
 
-  const concurrency = Number(values.concurrency ?? 2);
-  if (!Number.isInteger(concurrency) || concurrency < 1) {
-    console.error(`--concurrency must be a positive integer, got "${values.concurrency}".`);
-    return 2;
-  }
-
-  if (values["fix-audio"] === true) {
+  if (flags.fixAudio === true) {
     return await fixAudio(positionals, concurrency);
   }
 
-  const host =
-    (values.host as string | undefined) ??
-    process.env.PANOPTO_HOST ??
-    hostFromUrl(positionals[0]!) ??
-    DEFAULT_HOST;
+  const host = flags.host ?? hostFromUrl(positionals[0]!) ?? DEFAULT_HOST;
 
   let cookie: string;
   try {
-    const resolved = await resolveCookie(host, values["cookies-from"] as string | undefined, values.profile as string | undefined);
+    const resolved = await resolveCookie(host, flags.cookiesFrom, flags.profile);
     if (!resolved) return 1;
     cookie = resolved;
   } catch (err) {
@@ -175,19 +202,17 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   const opts: Options = {
-    out: (values.out as string | undefined) ?? process.env.PANOPTO_OUT ?? ".",
+    out: flags.out,
     concurrency,
-    recursive: values.recursive === true,
-    list: values.list === true || values["dry-run"] === true,
-    flat: values.flat === true,
-    separateStreams: values["separate-streams"] === true || values["all-streams"] === true,
-    sharedAudio: values["no-shared-audio"] !== true,
-    captions: values["no-captions"] !== true,
+    recursive: flags.recursive === true,
+    list: flags.list === true || flags.dryRun === true,
+    flat: flags.flat === true,
+    separateStreams: flags.separateStreams === true || flags.allStreams === true,
+    sharedAudio: flags.sharedAudio,
+    captions: flags.captions,
     captionsOnly:
-      values["captions-only"] === true ||
-      values["subs-only"] === true ||
-      values["subtitles-only"] === true,
-    overwrite: values.overwrite === true,
+      flags.captionsOnly === true || flags.subsOnly === true || flags.subtitlesOnly === true,
+    overwrite: flags.overwrite === true,
     host,
   };
 
@@ -451,6 +476,12 @@ async function downloadSession(
   if (opts.captions || opts.captionsOnly) {
     const srt = await saveCaptions(client, delivery, job.session.id, captionDest, opts.overwrite);
     if (srt) written.push(srt);
+    // Also for transcripts downloaded before the sidecar existed, hence the
+    // fileExists check rather than just `if (srt)`.
+    if (srt || (await fileExists(captionDest))) {
+      const meta = await saveCaptionsMeta(client, delivery, job.session, captionDest, opts.overwrite);
+      if (meta) written.push(meta);
+    }
     if (opts.captionsOnly) {
       // Nothing else to do - but a session without a transcript would otherwise
       // look like a silent skip, so say so.
@@ -525,6 +556,45 @@ async function saveCaptions(
   return null;
 }
 
+/**
+ * Write the recording's identity next to its transcript, as `<base>.json`.
+ *
+ * An .srt has timestamps but no session id, so on its own it is a dead end:
+ * quoting "38:12" from it gives you no way back to the moment it came from.
+ * The sidecar closes that gap - `viewerUrl` plus `&start=<seconds>` deep-links
+ * into Panopto at any point of the transcript.
+ *
+ * Returns the path, or null when one is already there.
+ */
+async function saveCaptionsMeta(
+  client: PanoptoClient,
+  delivery: Delivery,
+  session: SessionSummary,
+  captionDest: string,
+  overwrite: boolean,
+): Promise<string | null> {
+  const dest = captionDest.replace(/\.srt$/i, ".json");
+  if (!overwrite && (await fileExists(dest))) return null;
+
+  const viewerUrl = `${client.origin}/Panopto/Pages/Viewer.aspx?id=${session.id}`;
+  const meta = {
+    sessionId: session.id,
+    title: delivery.SessionName ?? session.name,
+    folder: session.folderName,
+    recordedAt: isoTimestamp(session.startTime ?? delivery.SessionStartTime),
+    durationSeconds: delivery.Duration ?? session.duration ?? null,
+    captions: basename(captionDest),
+    viewerUrl,
+    // Spelled out because the whole point of this file is to be read by
+    // something that then has to build a link.
+    deepLink: `${viewerUrl}&start=<seconds-from-start-of-recording>`,
+  };
+
+  await ensureDir(dirname(dest));
+  await Bun.write(dest, `${JSON.stringify(meta, null, 2)}\n`);
+  return dest;
+}
+
 /** Prefer the pre-rendered podcast MP4; fall back to the primary HLS stream. */
 async function bestCombinedUrl(
   client: PanoptoClient,
@@ -564,6 +634,12 @@ function baseName(session: SessionSummary): string {
   const name = sanitize(session.name);
   // Panopto's default session names often already embed the date; don't repeat it.
   return date && !name.includes(date) ? `${date} - ${name}` : name;
+}
+
+/** `--help` reaches us as a thrown CommanderError too, and is not a failure. */
+function isHelpRequest(err: unknown): boolean {
+  const code = (err as CommanderError | undefined)?.code;
+  return code === "commander.help" || code === "commander.helpDisplayed";
 }
 
 function errorMessage(err: unknown): string {

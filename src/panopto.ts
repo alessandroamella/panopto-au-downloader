@@ -1,3 +1,4 @@
+import { convert } from "html-to-text";
 import { USER_AGENT } from "./util";
 
 export interface PanoptoStream {
@@ -254,10 +255,15 @@ export function captionLanguages(delivery: Delivery): number[] {
   return listed.length > 0 ? listed : delivery.HasCaptions ? [0] : [];
 }
 
-function stripHtml(text: string): string {
-  return text
-    .replace(/<br\s*\/?>/gi, " ")
-    .replace(/<[^>]*>/g, "")
+/**
+ * Panopto's ErrorMessage is an HTML fragment (links, <br>, entities), but it
+ * ends up inside a one-line thrown Error, so flatten it to plain text.
+ */
+export function stripHtml(text: string): string {
+  return convert(text, {
+    wordwrap: false,
+    selectors: [{ selector: "a", options: { ignoreHref: true } }],
+  })
     .replace(/\s+/g, " ")
     .replace(/[.\s]+$/, "")
     .trim();

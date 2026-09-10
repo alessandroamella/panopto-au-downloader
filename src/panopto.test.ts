@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { captionLanguages, podcastStream, sourceStreams } from "./panopto";
+import { captionLanguages, podcastStream, sourceStreams, stripHtml } from "./panopto";
 
 test("captionLanguages trusts the delivery's own list", () => {
   expect(captionLanguages({ HasCaptions: true, AvailableCaptions: [{ Language: 16 }] })).toEqual([16]);
@@ -29,4 +29,12 @@ test("sourceStreams keeps Panopto's order and drops empty entries", () => {
     ],
   });
   expect(streams.map((s) => s.StreamUrl)).toEqual(["dv", "object"]);
+});
+
+test("stripHtml flattens Panopto's HTML error messages", () => {
+  expect(stripHtml("Unauthorized access.<br/>See <a href='/help'>help</a>.")).toBe(
+    "Unauthorized access. See help",
+  );
+  expect(stripHtml("Session &amp; folder not found.")).toBe("Session & folder not found");
+  expect(stripHtml("plain text")).toBe("plain text");
 });

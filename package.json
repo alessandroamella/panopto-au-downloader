@@ -4,7 +4,8 @@
   "type": "module",
   "private": true,
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/html-to-text": "^9.0.4"
   },
   "peerDependencies": {
     "typescript": "^7"
@@ -14,5 +15,14 @@
     "download": "bun run index.ts",
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "commander": "^15.0.0",
+    "date-fns": "^4.4.0",
+    "html-to-text": "^10.0.1",
+    "p-limit": "^7.3.2",
+    "pretty-bytes": "^7.1.3",
+    "pretty-ms": "^9.3.1",
+    "sanitize-filename": "^1.6.4"
   }
 }

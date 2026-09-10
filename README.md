@@ -66,21 +66,21 @@ bun run index.ts --list "<folder url>"
 
 | Flag | Meaning |
 | --- | --- |
-| `-o, --out <dir>` | output directory (default: current directory) |
+| `-o, --out <dir>` | output directory (default: current directory; env `PANOPTO_OUT`) |
 | `-c, --concurrency <n>` | parallel downloads (default 2) |
 | `-r, --recursive` | for folders, descend into subfolders |
 | `-s, --separate-streams` | save each source stream separately (see below) |
 | `-l, --list` / `--dry-run` | print the recordings and exit |
 | `--flat` | no per-folder or per-session subdirectories |
-| `--no-captions` | skip the `.srt` sidecar |
+| `--no-captions` | skip the `.srt` transcript and its `.json` sidecar |
 | `--captions-only` | only the `.srt` subtitles, no video (aliases `--subs-only`, `--subtitles-only`) |
 | `-f, --overwrite` | re-download files that already exist |
-| `--host <host>` | different Panopto instance (default `au.cloud.panopto.eu`) |
+| `--host <host>` | different Panopto instance (default: the target URL's host, else `au.cloud.panopto.eu`; env `PANOPTO_HOST`) |
 | `--cookies-from <b>` | where to get the cookie: `firefox` (default) or `none` (use `PANOPTO_COOKIE`) |
 | `--profile <name>` | which browser profile to read cookies from (name substring or path) |
 
 Targets can be viewer URLs, folder URLs, or bare session GUIDs, and you can pass
-several at once.
+several at once. `--help` prints the same list with the defaults filled in.
 
 ### Separate streams
 
@@ -98,6 +98,7 @@ downloads/
     02-object.mp4
     03-object.mp4
     captions.srt
+    captions.json
 ```
 
 Streams keep Panopto's own order, so `01` is the primary feed. They're numbered
@@ -129,6 +130,31 @@ numbers caption languages itself (AU's English is language 16, not 0), so the
 tool reads the available language ids out of the delivery info rather than
 guessing. Sessions without a transcript are simply skipped. Note that the
 podcast MP4 usually also carries the captions as an embedded subtitle track.
+
+### The `.json` sidecar
+
+Every `.srt` gets a `<name>.json` written next to it:
+
+```json
+{
+  "sessionId": "12345678-90ab-cdef-1234-567890abcdef",
+  "title": "Data Visualization — Lecture 2",
+  "folder": "Data Visualization Fall 2026",
+  "recordedAt": "2026-09-01T08:15:00.000Z",
+  "durationSeconds": 5412,
+  "captions": "2026-09-01 - lecture2.srt",
+  "viewerUrl": "https://au.cloud.panopto.eu/Panopto/Pages/Viewer.aspx?id=12345678-...",
+  "deepLink": "https://au.cloud.panopto.eu/Panopto/Pages/Viewer.aspx?id=12345678-...&start=<seconds-from-start-of-recording>"
+}
+```
+
+A transcript on its own is a dead end: it has timestamps but no session id, so
+`38:12` gives you nothing to click. With the sidecar, `viewerUrl` plus
+`&start=<seconds>` jumps Panopto straight to that moment — which is what makes a
+timestamp in a set of notes worth writing down.
+
+It's written whenever the `.srt` is, and also next to transcripts you downloaded
+before this existed, so a re-run backfills them without re-fetching anything.
 
 Files are named `YYYY-MM-DD - Session Name.mp4`. Interrupted HTTP downloads
 resume from the `.part` file; finished files are skipped on the next run unless
